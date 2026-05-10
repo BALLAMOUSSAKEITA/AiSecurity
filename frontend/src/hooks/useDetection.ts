@@ -54,9 +54,9 @@ interface UseDetectionOptions {
 
 const VEHICLE_CLASSES   = new Set(['car', 'truck', 'bus', 'motorbike', 'bicycle'])
 const FRAME_INTERVAL_MS = 100
-const PLATE_INTERVAL_MS = 2500
-const PLATE_CACHE_TTL   = 10000
-const IOU_THRESHOLD     = 0.25
+const PLATE_INTERVAL_MS = 1800   // lecture toutes les 1.8s
+const PLATE_CACHE_TTL   = 12000  // garde la plaque 12s
+const IOU_THRESHOLD     = 0.20
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -77,45 +77,39 @@ function cleanPlate(text: string): string {
   return cleaned
 }
 
-/** Crée un canvas upscalé + prétraité de la zone plaque. */
-function buildPlateCanvas(video: HTMLVideoElement, bbox: BoundingBox): HTMLCanvasElement {
-  // Zone plaque : bande centrale-basse du véhicule
+/** Zone plaque brute upscalée — couleur naturelle (pour TextDetector). */
+function buildPlateCanvasRaw(video: HTMLVideoElement, bbox: BoundingBox): HTMLCanvasElement {
   const px = bbox.x + bbox.width  * 0.08
-  const py = bbox.y + bbox.height * 0.58
+  const py = bbox.y + bbox.height * 0.55
   const pw = bbox.width  * 0.84
-  const ph = bbox.height * 0.38
-
-  const scale = Math.max(2, 320 / pw)   // toujours au moins ×2 et min 320px large
+  const ph = bbox.height * 0.42
+  const scale = Math.max(2.5, 360 / Math.max(pw, 1))
   const dw = Math.round(pw * scale)
   const dh = Math.round(ph * scale)
+  const c  = document.createElement('canvas')
+  c.width = dw; c.height = dh
+  c.getContext('2d')!.drawImage(video, px, py, pw, ph, 0, 0, dw, dh)
+  return c
+}
 
-  // Canvas raw
-  const raw = document.createElement('canvas')
-  raw.width = dw
-  raw.height = dh
-  const rCtx = raw.getContext('2d')!
-  rCtx.drawImage(video, px, py, pw, ph, 0, 0, dw, dh)
-
-  // Canvas prétraité
-  const out = document.createElement('canvas')
-  out.width = dw
-  out.height = dh
+/** Zone plaque binarisée — pour Tesseract.js. */
+function buildPlateCanvas(video: HTMLVideoElement, bbox: BoundingBox): HTMLCanvasElement {
+  const raw  = buildPlateCanvasRaw(video, bbox)
+  const { width: dw, height: dh } = raw
+  const out  = document.createElement('canvas')
+  out.width  = dw; out.height = dh
   const oCtx = out.getContext('2d')!
-  oCtx.filter = 'contrast(3) brightness(1.15) saturate(0)'
+  oCtx.filter = 'contrast(3.5) brightness(1.1) saturate(0)'
   oCtx.drawImage(raw, 0, 0)
   oCtx.filter = 'none'
-
-  // Binarisation adaptative simple
-  const id = oCtx.getImageData(0, 0, dw, dh)
-  const d  = id.data
+  const id   = oCtx.getImageData(0, 0, dw, dh)
+  const d    = id.data
   let sum = 0
   for (let i = 0; i < d.length; i += 4) sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
-  const threshold = sum / (dw * dh) // seuil adaptatif = moyenne
+  const thr  = sum / (dw * dh)
   for (let i = 0; i < d.length; i += 4) {
-    const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
-    const bin  = gray > threshold ? 255 : 0
-    d[i] = d[i + 1] = d[i + 2] = bin
-    d[i + 3] = 255
+    const v = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
+    d[i] = d[i + 1] = d[i + 2] = v > thr ? 255 : 0; d[i + 3] = 255
   }
   oCtx.putImageData(id, 0, 0)
   return out
@@ -144,10 +138,17 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
 
   /** Moteur 1 : TextDetector (OCR natif Chrome/Android — pas de download) */
   const initTextDetector = useCallback(() => {
-    if ('TextDetector' in window) {
-      textDetRef.current = new TextDetector()
-      setTesseractReady(true)
-      onTesseractReady?.(true)
+    try {
+      if ('TextDetector' in window) {
+        textDetRef.current = new TextDetector()
+        setTesseractReady(true)
+        onTesseractReady?.(true)
+        console.info('[OCR] TextDetector natif disponible ✓')
+      } else {
+        console.info('[OCR] TextDetector non disponible (non-Chrome), essai Tesseract.js…')
+      }
+    } catch (e) {
+      console.warn('[OCR] TextDetector init error:', e)
     }
   }, [onTesseractReady])
 
@@ -209,12 +210,15 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
   // ── Plate reading pipeline ────────────────────────────────────────────────
 
   const readPlateTextDetector = useCallback(
-    async (canvas: HTMLCanvasElement): Promise<PlateCache | null> => {
+    async (rawCanvas: HTMLCanvasElement): Promise<PlateCache | null> => {
       const det = textDetRef.current
       if (!det) return null
       try {
-        const results = await det.detect(canvas)
-        for (const r of results) {
+        // TextDetector fonctionne mieux sur l'image couleur naturelle
+        const results = await det.detect(rawCanvas)
+        // Trier par longueur décroissante du texte détecté
+        const sorted  = [...results].sort((a, b) => b.rawValue.length - a.rawValue.length)
+        for (const r of sorted) {
           const plate = cleanPlate(r.rawValue)
           if (plate) return { plate, confidence: 0.85, ts: Date.now() }
         }
@@ -259,15 +263,16 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
 
   const readPlate = useCallback(
     async (video: HTMLVideoElement, bbox: BoundingBox): Promise<PlateCache | null> => {
-      // Priorité : backend → TextDetector → Tesseract
+      // Priorité : backend → TextDetector (couleur) → Tesseract (binarisé)
       if (backendOkRef.current) {
         const r = await readPlateBackend(video, bbox)
         if (r) return r
       }
-      const canvas = buildPlateCanvas(video, bbox)
-      const r1 = await readPlateTextDetector(canvas)
+      const rawCanvas  = buildPlateCanvasRaw(video, bbox)
+      const r1 = await readPlateTextDetector(rawCanvas)
       if (r1) return r1
-      return readPlateTesseract(canvas)
+      const binCanvas  = buildPlateCanvas(video, bbox)
+      return readPlateTesseract(binCanvas)
     },
     [readPlateBackend, readPlateTextDetector, readPlateTesseract],
   )
@@ -344,7 +349,7 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
 
             let cache = track.plate
             const expired = !cache || (now - cache.ts > PLATE_CACHE_TTL)
-            if (sendPlates && expired && bw > 60 && bh > 45) {
+            if (sendPlates && expired && bw > 40 && bh > 35) {
               const r = await readPlate(video, bbox)
               if (r) { track.plate = r; cache = r }
             }

@@ -18,11 +18,13 @@ export default function App() {
     setDetections(d)
   }, [])
 
+  const ocrEngine = 'TextDetector' in window ? 'OCR natif (Chrome)' : 'Tesseract.js'
+
   const backendStatus = backendOk === null
     ? { label: 'Vérification du backend…', cls: 'status-unknown' }
     : backendOk
-      ? { label: 'Backend connecté — OCR haute précision actif', cls: 'status-ok' }
-      : { label: 'Backend hors-ligne — Tesseract.js (navigateur) actif', cls: 'status-warn' }
+      ? { label: 'Backend connecté — Plate Recognizer actif (haute précision)', cls: 'status-ok' }
+      : { label: `Backend hors-ligne — ${ocrEngine} actif`, cls: 'status-warn' }
 
   return (
     <div className="app">
@@ -75,8 +77,9 @@ export default function App() {
               placeholder="http://localhost:8000"
             />
             <p className="config-hint">
-              Sans backend : Tesseract.js (~60% précision).<br />
-              Avec backend Python + Plate Recognizer : ~95%.
+              <strong style={{color:'var(--text)'}}>Sans backend</strong> : OCR natif Chrome ou Tesseract.js (~60%).<br />
+              <strong style={{color:'var(--text)'}}>Avec backend</strong> : Plate Recognizer API (~95%).<br /><br />
+              ⚠️ Sur Railway, définir <code>VITE_BACKEND_URL</code> dans les variables du service frontend pour connecter le backend.
             </p>
           </div>
 
