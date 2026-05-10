@@ -35,6 +35,16 @@ interface TrackedVehicle {
   plate?: PlateCache
 }
 
+interface TextDetectorResult {
+  rawValue: string
+}
+
+declare global {
+  class TextDetector {
+    detect(image: CanvasImageSource): Promise<TextDetectorResult[]>
+  }
+}
+
 interface UseDetectionOptions {
   backendUrl: string
   onDetection: (detections: Detection[]) => void
@@ -42,77 +52,133 @@ interface UseDetectionOptions {
   onTesseractReady?: (ready: boolean) => void
 }
 
-const VEHICLE_CLASSES = new Set(['car', 'truck', 'bus', 'motorbike', 'bicycle'])
+const VEHICLE_CLASSES   = new Set(['car', 'truck', 'bus', 'motorbike', 'bicycle'])
 const FRAME_INTERVAL_MS = 100
-const PLATE_SEND_INTERVAL_MS = 2000
-const PLATE_CACHE_TTL_MS = 8000
-const IOU_MATCH_THRESHOLD = 0.3
+const PLATE_INTERVAL_MS = 2500
+const PLATE_CACHE_TTL   = 10000
+const IOU_THRESHOLD     = 0.25
+
+// ── helpers ──────────────────────────────────────────────────────────────────
 
 function iou(a: BoundingBox, b: BoundingBox): number {
-  const ax2 = a.x + a.width
-  const ay2 = a.y + a.height
-  const bx2 = b.x + b.width
-  const by2 = b.y + b.height
-  const ix = Math.max(0, Math.min(ax2, bx2) - Math.max(a.x, b.x))
-  const iy = Math.max(0, Math.min(ay2, by2) - Math.max(a.y, b.y))
+  const ix = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x))
+  const iy = Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y))
   const inter = ix * iy
   const union = a.width * a.height + b.width * b.height - inter
   return union <= 0 ? 0 : inter / union
 }
 
-function cleanPlateText(text: string): string {
-  return text
-    .toUpperCase()
-    .replace(/[^A-Z0-9-]/g, '')
-    .trim()
+/** Garde uniquement les caractères de plaque valides. */
+function cleanPlate(text: string): string {
+  const cleaned = text.toUpperCase().replace(/[^A-Z0-9]/g, '')
+  // Filtre basique : longueur entre 4 et 9 car, au moins 1 chiffre et 1 lettre
+  if (cleaned.length < 4 || cleaned.length > 9) return ''
+  if (!/[A-Z]/.test(cleaned) || !/[0-9]/.test(cleaned)) return ''
+  return cleaned
 }
 
+/** Crée un canvas upscalé + prétraité de la zone plaque. */
+function buildPlateCanvas(video: HTMLVideoElement, bbox: BoundingBox): HTMLCanvasElement {
+  // Zone plaque : bande centrale-basse du véhicule
+  const px = bbox.x + bbox.width  * 0.08
+  const py = bbox.y + bbox.height * 0.58
+  const pw = bbox.width  * 0.84
+  const ph = bbox.height * 0.38
+
+  const scale = Math.max(2, 320 / pw)   // toujours au moins ×2 et min 320px large
+  const dw = Math.round(pw * scale)
+  const dh = Math.round(ph * scale)
+
+  // Canvas raw
+  const raw = document.createElement('canvas')
+  raw.width = dw
+  raw.height = dh
+  const rCtx = raw.getContext('2d')!
+  rCtx.drawImage(video, px, py, pw, ph, 0, 0, dw, dh)
+
+  // Canvas prétraité
+  const out = document.createElement('canvas')
+  out.width = dw
+  out.height = dh
+  const oCtx = out.getContext('2d')!
+  oCtx.filter = 'contrast(3) brightness(1.15) saturate(0)'
+  oCtx.drawImage(raw, 0, 0)
+  oCtx.filter = 'none'
+
+  // Binarisation adaptative simple
+  const id = oCtx.getImageData(0, 0, dw, dh)
+  const d  = id.data
+  let sum = 0
+  for (let i = 0; i < d.length; i += 4) sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
+  const threshold = sum / (dw * dh) // seuil adaptatif = moyenne
+  for (let i = 0; i < d.length; i += 4) {
+    const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
+    const bin  = gray > threshold ? 255 : 0
+    d[i] = d[i + 1] = d[i + 2] = bin
+    d[i + 3] = 255
+  }
+  oCtx.putImageData(id, 0, 0)
+  return out
+}
+
+// ── hook ─────────────────────────────────────────────────────────────────────
+
 export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesseractReady }: UseDetectionOptions) {
-  const modelRef = useRef<cocoSsd.ObjectDetection | null>(null)
-  const tesseractRef = useRef<Awaited<ReturnType<typeof createWorker>> | null>(null)
-  const [modelReady, setModelReady] = useState(false)
-  const [loading, setLoading] = useState(false)
+  const modelRef      = useRef<cocoSsd.ObjectDetection | null>(null)
+  const tesseractRef  = useRef<Awaited<ReturnType<typeof createWorker>> | null>(null)
+  const textDetRef    = useRef<TextDetector | null>(null)
+
+  const [modelReady,    setModelReady]    = useState(false)
+  const [loading,       setLoading]       = useState(false)
   const [tesseractReady, setTesseractReady] = useState(false)
-  const runningRef = useRef(false)
-  const animRef = useRef<number>(0)
-  const lastFrameRef = useRef<number>(0)
-  const lastPlateSendRef = useRef<number>(0)
-  const tracksRef = useRef<Map<string, TrackedVehicle>>(new Map())
-  const nextIdRef = useRef(0)
-  const backendOkRef = useRef<boolean | null>(null)
+
+  const runningRef       = useRef(false)
+  const animRef          = useRef<number>(0)
+  const lastFrameRef     = useRef<number>(0)
+  const lastPlateRef     = useRef<number>(0)
+  const tracksRef        = useRef<Map<string, TrackedVehicle>>(new Map())
+  const nextIdRef        = useRef(0)
+  const backendOkRef     = useRef<boolean | null>(null)
+
+  // ── OCR engines ───────────────────────────────────────────────────────────
+
+  /** Moteur 1 : TextDetector (OCR natif Chrome/Android — pas de download) */
+  const initTextDetector = useCallback(() => {
+    if ('TextDetector' in window) {
+      textDetRef.current = new TextDetector()
+      setTesseractReady(true)
+      onTesseractReady?.(true)
+    }
+  }, [onTesseractReady])
+
+  /** Moteur 2 : Tesseract.js (fallback WASM) */
+  const initTesseract = useCallback(async () => {
+    if (tesseractRef.current || textDetRef.current) return
+    try {
+      const w = await createWorker('eng', 1)
+      await w.setParameters({
+        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+        tessedit_pageseg_mode: PSM.SINGLE_LINE,
+      })
+      tesseractRef.current = w
+      setTesseractReady(true)
+      onTesseractReady?.(true)
+    } catch (err) {
+      console.warn('[OCR] Tesseract init failed:', err)
+    }
+  }, [onTesseractReady])
+
+  // ── Backend health ────────────────────────────────────────────────────────
 
   const checkBackend = useCallback(async () => {
     try {
       const res = await fetch(`${backendUrl}/api/health`, { signal: AbortSignal.timeout(2000) })
-      const ok = res.ok
-      if (ok !== backendOkRef.current) {
-        backendOkRef.current = ok
-        onBackendStatus?.(ok)
-      }
+      const ok  = res.ok
+      if (ok !== backendOkRef.current) { backendOkRef.current = ok; onBackendStatus?.(ok) }
     } catch {
-      if (backendOkRef.current !== false) {
-        backendOkRef.current = false
-        onBackendStatus?.(false)
-      }
+      if (backendOkRef.current !== false) { backendOkRef.current = false; onBackendStatus?.(false) }
     }
   }, [backendUrl, onBackendStatus])
-
-  const initTesseract = useCallback(async () => {
-    if (tesseractRef.current) return
-    try {
-      // v7 : pas de chemins personnalisés, on utilise les défauts CDN jsdelivr
-      const worker = await createWorker('eng', 1)
-      await worker.setParameters({
-        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',
-        tessedit_pageseg_mode: PSM.SINGLE_WORD,
-      })
-      tesseractRef.current = worker
-      setTesseractReady(true)
-      onTesseractReady?.(true)
-    } catch (err) {
-      console.error('[Tesseract] init failed:', err)
-    }
-  }, [])
 
   const loadModel = useCallback(async () => {
     if (modelRef.current) return
@@ -127,73 +193,47 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
 
   useEffect(() => {
     loadModel()
-    initTesseract()
+    initTextDetector()        // synchrone, disponible immédiatement si supporté
+    initTesseract()           // asynchrone, fallback si TextDetector absent
     checkBackend()
-    const interval = setInterval(checkBackend, 5000)
+    const iv = setInterval(checkBackend, 6000)
     return () => {
-      clearInterval(interval)
+      clearInterval(iv)
       runningRef.current = false
       if (animRef.current) cancelAnimationFrame(animRef.current)
       tesseractRef.current?.terminate()
       tesseractRef.current = null
     }
-  }, [loadModel, initTesseract, checkBackend])
+  }, [loadModel, initTextDetector, initTesseract, checkBackend])
 
-  const cropPlateArea = useCallback(
-    (video: HTMLVideoElement, bbox: BoundingBox): HTMLCanvasElement => {
-      // La plaque est dans le tiers inférieur du véhicule, centré horizontalement
-      const plateX = bbox.x + bbox.width * 0.1
-      const plateY = bbox.y + bbox.height * 0.6   // 60% depuis le haut
-      const plateW = bbox.width * 0.8
-      const plateH = bbox.height * 0.38
+  // ── Plate reading pipeline ────────────────────────────────────────────────
 
-      // Upscale agressif : on veut au moins 300px de large pour l'OCR
-      const scale = Math.max(1, 300 / plateW)
-      const dstW = Math.round(plateW * scale)
-      const dstH = Math.round(plateH * scale)
-
-      // Canvas 1 : crop brut upscalé
-      const raw = document.createElement('canvas')
-      raw.width = dstW
-      raw.height = dstH
-      const rCtx = raw.getContext('2d')!
-      rCtx.drawImage(video, plateX, plateY, plateW, plateH, 0, 0, dstW, dstH)
-
-      // Canvas 2 : preprocessing (contraste + binarisation)
-      const out = document.createElement('canvas')
-      out.width = dstW
-      out.height = dstH
-      const oCtx = out.getContext('2d')!
-
-      // Filtre CSS : augmenter contraste et saturation avant la lecture
-      oCtx.filter = 'contrast(2.5) brightness(1.1) grayscale(1)'
-      oCtx.drawImage(raw, 0, 0)
-      oCtx.filter = 'none'
-
-      // Binarisation manuelle via ImageData
-      const img = oCtx.getImageData(0, 0, dstW, dstH)
-      const d = img.data
-      for (let i = 0; i < d.length; i += 4) {
-        const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
-        const bin = gray > 128 ? 255 : 0
-        d[i] = d[i + 1] = d[i + 2] = bin
-      }
-      oCtx.putImageData(img, 0, 0)
-
-      return out
+  const readPlateTextDetector = useCallback(
+    async (canvas: HTMLCanvasElement): Promise<PlateCache | null> => {
+      const det = textDetRef.current
+      if (!det) return null
+      try {
+        const results = await det.detect(canvas)
+        for (const r of results) {
+          const plate = cleanPlate(r.rawValue)
+          if (plate) return { plate, confidence: 0.85, ts: Date.now() }
+        }
+        return null
+      } catch { return null }
     },
     [],
   )
 
-  const cropVehicle = useCallback(
-    (video: HTMLVideoElement, bbox: BoundingBox): HTMLCanvasElement => {
-      const canvas = document.createElement('canvas')
-      const scale = Math.max(1, 200 / bbox.width)
-      canvas.width = Math.round(bbox.width * scale)
-      canvas.height = Math.round(bbox.height * scale)
-      const ctx = canvas.getContext('2d')!
-      ctx.drawImage(video, bbox.x, bbox.y, bbox.width, bbox.height, 0, 0, canvas.width, canvas.height)
-      return canvas
+  const readPlateTesseract = useCallback(
+    async (canvas: HTMLCanvasElement): Promise<PlateCache | null> => {
+      const w = tesseractRef.current
+      if (!w) return null
+      try {
+        const { data } = await w.recognize(canvas)
+        const plate    = cleanPlate(data.text)
+        if (!plate) return null
+        return { plate, confidence: data.confidence / 100, ts: Date.now() }
+      } catch { return null }
     },
     [],
   )
@@ -201,104 +241,62 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
   const readPlateBackend = useCallback(
     async (video: HTMLVideoElement, bbox: BoundingBox): Promise<PlateCache | null> => {
       try {
-        const canvas = cropVehicle(video, bbox)
-        const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9))
+        const canvas = buildPlateCanvas(video, bbox)
+        const blob   = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92))
         if (!blob) return null
-        const form = new FormData()
-        form.append('image', blob, 'vehicle.jpg')
-        const res = await fetch(`${backendUrl}/api/plate`, {
-          method: 'POST',
-          body: form,
-          signal: AbortSignal.timeout(3000),
-        })
+        const form   = new FormData()
+        form.append('image', blob, 'plate.jpg')
+        const res    = await fetch(`${backendUrl}/api/plate`, { method: 'POST', body: form, signal: AbortSignal.timeout(4000) })
         if (!res.ok) return null
-        const data = await res.json() as { plate?: string; confidence?: number }
-        const plate = cleanPlateText(data.plate ?? '')
-        if (plate.length < 4) return null
-        return { plate, confidence: data.confidence ?? 0.5, ts: Date.now() }
-      } catch {
-        return null
-      }
+        const json   = await res.json() as { plate?: string; confidence?: number }
+        const plate  = cleanPlate(json.plate ?? '')
+        if (!plate) return null
+        return { plate, confidence: json.confidence ?? 0.6, ts: Date.now() }
+      } catch { return null }
     },
-    [backendUrl, cropVehicle],
-  )
-
-  const readPlateTesseract = useCallback(
-    async (video: HTMLVideoElement, bbox: BoundingBox): Promise<PlateCache | null> => {
-      const worker = tesseractRef.current
-      if (!worker) return null
-      try {
-        // Crop précis sur la zone plaque + preprocessing
-        const canvas = cropPlateArea(video, bbox)
-        const { data } = await worker.recognize(canvas)
-        const plate = cleanPlateText(data.text)
-        if (plate.length < 4) return null
-        return { plate, confidence: data.confidence / 100, ts: Date.now() }
-      } catch {
-        return null
-      }
-    },
-    [cropPlateArea],
+    [backendUrl],
   )
 
   const readPlate = useCallback(
     async (video: HTMLVideoElement, bbox: BoundingBox): Promise<PlateCache | null> => {
-      // Essaie le backend en premier, tombe sur Tesseract.js sinon
+      // Priorité : backend → TextDetector → Tesseract
       if (backendOkRef.current) {
-        const result = await readPlateBackend(video, bbox)
-        if (result) return result
+        const r = await readPlateBackend(video, bbox)
+        if (r) return r
       }
-      return readPlateTesseract(video, bbox)
+      const canvas = buildPlateCanvas(video, bbox)
+      const r1 = await readPlateTextDetector(canvas)
+      if (r1) return r1
+      return readPlateTesseract(canvas)
     },
-    [readPlateBackend, readPlateTesseract],
+    [readPlateBackend, readPlateTextDetector, readPlateTesseract],
   )
 
-  const matchOrCreateTrack = useCallback(
-    (bbox: BoundingBox, cx: number, cy: number, now: number): TrackedVehicle => {
-      let bestMatch: TrackedVehicle | null = null
-      let bestIou = IOU_MATCH_THRESHOLD
+  // ── Track management ──────────────────────────────────────────────────────
 
-      for (const track of tracksRef.current.values()) {
-        // Expire les pistes trop vieilles
-        if (now - track.ts > 3000) continue
-        const trackBbox: BoundingBox = {
-          x: track.cx - bbox.width / 2,
-          y: track.cy - bbox.height / 2,
-          width: bbox.width,
-          height: bbox.height,
-        }
-        const score = iou(bbox, trackBbox)
-        if (score > bestIou) {
-          bestIou = score
-          bestMatch = track
-        }
-      }
+  const matchOrCreate = useCallback((bbox: BoundingBox, cx: number, cy: number, now: number): TrackedVehicle => {
+    let best: TrackedVehicle | null = null
+    let bestScore = IOU_THRESHOLD
+    for (const t of tracksRef.current.values()) {
+      if (now - t.ts > 4000) continue
+      const tb: BoundingBox = { x: t.cx - bbox.width / 2, y: t.cy - bbox.height / 2, width: bbox.width, height: bbox.height }
+      const s = iou(bbox, tb)
+      if (s > bestScore) { bestScore = s; best = t }
+    }
+    if (best) { best.cx = cx; best.cy = cy; best.ts = now; return best }
+    const t: TrackedVehicle = { id: `v${nextIdRef.current++}`, cx, cy, ts: now }
+    tracksRef.current.set(t.id, t)
+    return t
+  }, [])
 
-      if (bestMatch) {
-        bestMatch.cx = cx
-        bestMatch.cy = cy
-        bestMatch.ts = now
-        return bestMatch
-      }
+  const estimateSpeed = useCallback((track: TrackedVehicle, cx: number, cy: number, now: number): number | undefined => {
+    const dt = (now - track.ts) / 1000
+    if (dt < 0.05 || dt > 3) return undefined
+    const dpx = Math.hypot(cx - track.cx, cy - track.cy)
+    return Math.min((dpx * 0.005 / dt) * 3.6, 300)
+  }, [])
 
-      const newTrack: TrackedVehicle = { id: `v${nextIdRef.current++}`, cx, cy, ts: now }
-      tracksRef.current.set(newTrack.id, newTrack)
-      return newTrack
-    },
-    [],
-  )
-
-  const estimateSpeed = useCallback(
-    (track: TrackedVehicle, cx: number, cy: number, now: number): number | undefined => {
-      const dt = (now - track.ts) / 1000
-      if (dt < 0.05 || dt > 3) return undefined
-      const dpx = Math.hypot(cx - track.cx, cy - track.cy)
-      const metersPerPixel = 0.005
-      const speedMs = (dpx * metersPerPixel) / dt
-      return Math.min(speedMs * 3.6, 300)
-    },
-    [],
-  )
+  // ── Detection loop ────────────────────────────────────────────────────────
 
   const runDetection = useCallback(
     (video: HTMLVideoElement, canvas: HTMLCanvasElement) => {
@@ -316,23 +314,21 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
         return
       }
 
-      modelRef.current.detect(video).then(async predictions => {
+      modelRef.current.detect(video).then(async preds => {
         if (!runningRef.current) return
-
         const ctx = canvas.getContext('2d')
         if (!ctx) return
 
-        canvas.width = video.videoWidth
+        canvas.width  = video.videoWidth
         canvas.height = video.videoHeight
         ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-        const vehicles = predictions.filter(p => VEHICLE_CLASSES.has(p.class))
-        const sendPlates = now - lastPlateSendRef.current > PLATE_SEND_INTERVAL_MS
-        if (sendPlates) lastPlateSendRef.current = now
+        const vehicles   = preds.filter(p => VEHICLE_CLASSES.has(p.class))
+        const sendPlates = now - lastPlateRef.current > PLATE_INTERVAL_MS
+        if (sendPlates) lastPlateRef.current = now
 
-        // Nettoyage des pistes expirées
-        for (const [id, track] of tracksRef.current.entries()) {
-          if (now - track.ts > 5000) tracksRef.current.delete(id)
+        for (const [id, t] of tracksRef.current) {
+          if (now - t.ts > 6000) tracksRef.current.delete(id)
         }
 
         const results: Detection[] = await Promise.all(
@@ -342,80 +338,61 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
             const cx = bx + bw / 2
             const cy = by + bh / 2
 
-            const track = matchOrCreateTrack(bbox, cx, cy, now)
+            const track = matchOrCreate(bbox, cx, cy, now)
             const speed = estimateSpeed(track, cx, cy, now)
+            track.cx = cx; track.cy = cy; track.ts = now
 
-            // Met à jour la piste avec la vitesse
-            track.cx = cx
-            track.cy = cy
-            track.ts = now
-
-            // Lecture plaque : seulement si véhicule assez grand et pas trop récente
-            let plateCache = track.plate
-            const plateExpired = !plateCache || (now - plateCache.ts > PLATE_CACHE_TTL_MS)
-
-            if (sendPlates && plateExpired && bw > 80 && bh > 60) {
-              const result = await readPlate(video, bbox)
-              if (result) {
-                track.plate = result
-                plateCache = result
-              }
+            let cache = track.plate
+            const expired = !cache || (now - cache.ts > PLATE_CACHE_TTL)
+            if (sendPlates && expired && bw > 60 && bh > 45) {
+              const r = await readPlate(video, bbox)
+              if (r) { track.plate = r; cache = r }
             }
 
-            // === Dessin ===
-            const highConf = pred.score > 0.7
-            ctx.strokeStyle = highConf ? '#3b82f6' : '#f59e0b'
-            ctx.lineWidth = 2
+            // ── draw ────────────────────────────────────────────────────────
+            const hc = pred.score > 0.65
+            ctx.strokeStyle = hc ? '#4f8ef7' : '#fbbf24'
+            ctx.lineWidth   = 2
             ctx.strokeRect(bx, by, bw, bh)
 
-            // Zone plaque en surbrillance (debug visuel)
-            const pzX = bx + bw * 0.1
-            const pzY = by + bh * 0.6
-            const pzW = bw * 0.8
-            const pzH = bh * 0.38
-            ctx.strokeStyle = 'rgba(34,197,94,0.6)'
-            ctx.lineWidth = 1
+            // Zone plaque (debug)
+            ctx.strokeStyle = 'rgba(34,211,160,0.5)'
+            ctx.lineWidth   = 1
             ctx.setLineDash([4, 3])
-            ctx.strokeRect(pzX, pzY, pzW, pzH)
+            ctx.strokeRect(bx + bw * 0.08, by + bh * 0.58, bw * 0.84, bh * 0.38)
             ctx.setLineDash([])
 
-            ctx.font = 'bold 13px Inter, system-ui, sans-serif'
+            ctx.font = 'bold 12px Inter,sans-serif'
             const label = `${pred.class} ${Math.round(pred.score * 100)}%`
-            const lw = ctx.measureText(label).width + 10
-            ctx.fillStyle = highConf ? '#3b82f6' : '#f59e0b'
-            ctx.fillRect(bx, by - 22, lw, 22)
+            const lw    = ctx.measureText(label).width + 10
+            ctx.fillStyle = hc ? '#4f8ef7' : '#fbbf24'
+            ctx.fillRect(bx, by - 20, lw, 20)
             ctx.fillStyle = '#fff'
-            ctx.fillText(label, bx + 5, by - 6)
+            ctx.fillText(label, bx + 5, by - 5)
 
-            if (plateCache?.plate) {
-              const plateLabel = `🔢 ${plateCache.plate}`
-              const pw = ctx.measureText(plateLabel).width + 10
-              ctx.fillStyle = '#22c55e'
-              ctx.fillRect(bx, by + bh + 2, pw, 22)
+            if (cache?.plate) {
+              ctx.font = 'bold 12px JetBrains Mono,monospace'
+              const pl = cache.plate
+              const pw2 = ctx.measureText(pl).width + 12
+              ctx.fillStyle = 'rgba(34,211,160,0.85)'
+              ctx.fillRect(bx, by + bh + 2, pw2, 20)
               ctx.fillStyle = '#fff'
-              ctx.fillText(plateLabel, bx + 5, by + bh + 16)
+              ctx.fillText(pl, bx + 6, by + bh + 15)
             }
 
             if (speed !== undefined) {
-              ctx.font = 'bold 12px Inter, system-ui, sans-serif'
-              const speedLabel = `${Math.round(speed)} km/h`
-              const sw = ctx.measureText(speedLabel).width + 10
-              ctx.fillStyle = speed > 80 ? '#ef4444' : '#f59e0b'
-              ctx.fillRect(bx + bw - sw, by - 22, sw, 22)
+              ctx.font = 'bold 11px JetBrains Mono,monospace'
+              const sl  = `${Math.round(speed)} km/h`
+              const sw2 = ctx.measureText(sl).width + 10
+              ctx.fillStyle = speed > 80 ? '#f87171' : '#fbbf24'
+              ctx.fillRect(bx + bw - sw2, by - 20, sw2, 20)
               ctx.fillStyle = '#fff'
-              ctx.fillText(speedLabel, bx + bw - sw + 5, by - 6)
+              ctx.fillText(sl, bx + bw - sw2 + 5, by - 5)
             }
 
-            return {
-              id: track.id,
-              bbox,
-              class: pred.class,
-              score: pred.score,
-              plate: plateCache?.plate,
-              plateConfidence: plateCache?.confidence,
-              speedKmh: speed,
-              timestamp: Date.now(),
-            }
+            return { id: track.id, bbox, class: pred.class, score: pred.score,
+              plate: cache?.plate, plateConfidence: cache?.confidence,
+              speedKmh: speed, timestamp: Date.now() }
           }),
         )
 
@@ -425,16 +402,13 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
         animRef.current = requestAnimationFrame(() => runDetection(video, canvas))
       })
     },
-    [matchOrCreateTrack, estimateSpeed, readPlate, onDetection],
+    [matchOrCreate, estimateSpeed, readPlate, onDetection],
   )
 
-  const start = useCallback(
-    (video: HTMLVideoElement, canvas: HTMLCanvasElement) => {
-      runningRef.current = true
-      runDetection(video, canvas)
-    },
-    [runDetection],
-  )
+  const start = useCallback((video: HTMLVideoElement, canvas: HTMLCanvasElement) => {
+    runningRef.current = true
+    runDetection(video, canvas)
+  }, [runDetection])
 
   const stop = useCallback(() => {
     runningRef.current = false

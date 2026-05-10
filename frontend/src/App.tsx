@@ -30,7 +30,7 @@ export default function App() {
         <div className="header-left">
           <div className="logo-mark">⚡</div>
           <div className="header-title">
-            <h1>AiSecurity</h1>
+            <h1>PlateVision</h1>
             <span className="byline">by Balla Moussa Keita</span>
           </div>
           <span className="badge">Détection route</span>
