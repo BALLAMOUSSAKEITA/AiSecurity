@@ -31,11 +31,7 @@ export default function Camera({ onDetection, onRunningChange, backendUrl, onBac
         streamRef.current.getTracks().forEach(t => t.stop())
       }
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode,
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
+        video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
       })
       streamRef.current = stream
@@ -52,8 +48,7 @@ export default function Camera({ onDetection, onRunningChange, backendUrl, onBac
       stop()
       streamRef.current?.getTracks().forEach(t => t.stop())
       streamRef.current = null
-      const video = videoRef.current
-      if (video) { video.srcObject = null }
+      if (videoRef.current) videoRef.current.srcObject = null
       setRunning(false)
       onRunningChange(false)
       onDetection([])
@@ -73,9 +68,7 @@ export default function Camera({ onDetection, onRunningChange, backendUrl, onBac
     if (running) {
       stop()
       await startCamera(next)
-      if (videoRef.current && canvasRef.current) {
-        start(videoRef.current, canvasRef.current)
-      }
+      if (videoRef.current && canvasRef.current) start(videoRef.current, canvasRef.current)
     }
   }, [facing, running, start, stop, startCamera])
 
@@ -86,53 +79,59 @@ export default function Camera({ onDetection, onRunningChange, backendUrl, onBac
     }
   }, [stop])
 
+  const statusLabel = loading
+    ? 'Chargement du modèle IA…'
+    : modelReady
+      ? tesseractReady ? 'IA + OCR prêts' : 'IA prête — OCR en chargement…'
+      : 'Initialisation…'
+
   return (
-    <div className="camera-wrapper">
-      <video
-        ref={videoRef}
-        className="camera-video"
-        playsInline
-        muted
-        autoPlay
-      />
+    <div className={`camera-wrapper ${running ? 'running' : ''}`}>
+      <video ref={videoRef} className="camera-video" playsInline muted autoPlay />
       <canvas ref={canvasRef} className="camera-canvas" />
 
-      {!running && (
+      {/* Placeholder quand caméra off */}
+      {!running && !loading && (
         <div className="camera-placeholder">
-          <div className="placeholder-icon">📷</div>
+          <div className="placeholder-icon-wrap">📷</div>
           <p className="placeholder-text">Caméra inactive</p>
           <p className="placeholder-sub">
-            {loading
-              ? 'Chargement du modèle IA…'
-              : modelReady
-                ? tesseractReady
-                  ? '✓ Prêt (IA + OCR)'
-                  : '✓ IA prête — OCR en chargement…'
-                : 'Initialisation…'}
+            {modelReady
+              ? <><strong>Modèle IA prêt</strong> — appuyez sur Démarrer</>
+              : statusLabel}
           </p>
         </div>
       )}
 
+      {/* Chargement TensorFlow */}
       {loading && (
         <div className="loading-overlay">
-          <div className="spinner" />
-          <p>Chargement TensorFlow…</p>
+          <div className="loading-content">
+            <div className="spinner" />
+            <p className="loading-title">Chargement du modèle IA</p>
+            <p className="loading-sub">TensorFlow.js COCO-SSD…</p>
+          </div>
         </div>
       )}
 
+      {/* OCR en cours de chargement (pendant la détection) */}
       {!loading && modelReady && !tesseractReady && running && (
         <div className="ocr-loading-badge">
-          <div className="spinner-sm" /> OCR en chargement…
+          <div className="spinner-sm" />
+          OCR en chargement…
         </div>
       )}
 
+      {/* Erreur caméra */}
       {error && (
         <div className="error-overlay">
-          <p>⚠️ {error}</p>
-          <button className="btn-dismiss" onClick={() => setError(null)}>OK</button>
+          <div className="error-icon">⚠️</div>
+          <p className="error-msg">{error}</p>
+          <button className="btn-dismiss" onClick={() => setError(null)}>Fermer</button>
         </div>
       )}
 
+      {/* Contrôles */}
       <div className="camera-controls">
         <button
           className={`btn-main ${running ? 'btn-stop' : 'btn-start'}`}
@@ -141,8 +140,7 @@ export default function Camera({ onDetection, onRunningChange, backendUrl, onBac
         >
           {running ? '⏹ Arrêter' : '▶ Démarrer'}
         </button>
-
-        <button className="btn-icon" onClick={handleFlip} title="Retourner caméra">
+        <button className="btn-icon" onClick={handleFlip} title="Changer de caméra">
           🔄
         </button>
       </div>

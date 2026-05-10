@@ -19,22 +19,27 @@ export default function App() {
   }, [])
 
   const backendStatus = backendOk === null
-    ? { label: '…', cls: 'status-unknown' }
+    ? { label: 'Vérification du backend…', cls: 'status-unknown' }
     : backendOk
-      ? { label: 'Backend connecté', cls: 'status-ok' }
-      : { label: 'Backend hors-ligne (Tesseract.js actif)', cls: 'status-warn' }
+      ? { label: 'Backend connecté — OCR haute précision actif', cls: 'status-ok' }
+      : { label: 'Backend hors-ligne — Tesseract.js (navigateur) actif', cls: 'status-warn' }
 
   return (
     <div className="app">
       <header className="app-header">
         <div className="header-left">
-          <span className="logo">⚡</span>
-          <h1>AiSecurity</h1>
+          <div className="logo-mark">⚡</div>
+          <div className="header-title">
+            <h1>AiSecurity</h1>
+            <span className="byline">by Balla Moussa Keita</span>
+          </div>
           <span className="badge">Détection route</span>
         </div>
         <div className="header-right">
-          <div className={`status-dot ${isRunning ? 'active' : ''}`} />
-          <span className="status-label">{isRunning ? 'Actif' : 'Inactif'}</span>
+          <div className={`live-indicator ${isRunning ? 'active' : ''}`}>
+            <span className="live-dot" />
+            {isRunning ? 'LIVE' : 'OFF'}
+          </div>
         </div>
       </header>
 
@@ -53,9 +58,13 @@ export default function App() {
             onTesseractReady={setTesseractReady}
           />
         </div>
+
         <aside className="sidebar">
-          <ResultsPanel detections={detections} tesseractReady={tesseractReady} />
-          <div className="config-panel">
+          <div className="sidebar-section">
+            <ResultsPanel detections={detections} tesseractReady={tesseractReady} />
+          </div>
+
+          <div className="sidebar-section config-panel">
             <label className="config-label">URL serveur backend</label>
             <input
               ref={inputRef}
@@ -66,9 +75,14 @@ export default function App() {
               placeholder="http://localhost:8000"
             />
             <p className="config-hint">
-              Sans backend : OCR via Tesseract.js (navigateur, précision ~60%).<br />
-              Avec backend Python : OCR via Plate Recognizer (précision ~95%).
+              Sans backend : Tesseract.js (~60% précision).<br />
+              Avec backend Python + Plate Recognizer : ~95%.
             </p>
+          </div>
+
+          <div className="sidebar-footer">
+            <span className="creator-label">Créé par</span>
+            <span className="creator-name">Balla Moussa Keita</span>
           </div>
         </aside>
       </main>

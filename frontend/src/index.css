@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@600;700&display=swap');
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -5,16 +7,29 @@
 }
 
 :root {
-  --bg: #0f172a;
-  --surface: #1e293b;
-  --border: #334155;
-  --accent: #3b82f6;
-  --accent-glow: rgba(59, 130, 246, 0.3);
-  --success: #22c55e;
-  --warning: #f59e0b;
-  --danger: #ef4444;
-  --text: #f1f5f9;
-  --text-muted: #94a3b8;
+  --bg:           #050b18;
+  --bg2:          #080f1f;
+  --surface:      #0d1628;
+  --surface2:     #111e35;
+  --border:       rgba(99, 139, 255, 0.12);
+  --border-hover: rgba(99, 139, 255, 0.28);
+
+  --accent:       #4f8ef7;
+  --accent2:      #7c6af7;
+  --accent-glow:  rgba(79, 142, 247, 0.18);
+  --accent-grad:  linear-gradient(135deg, #4f8ef7, #7c6af7);
+
+  --success:      #22d3a0;
+  --success-glow: rgba(34, 211, 160, 0.18);
+  --warning:      #fbbf24;
+  --danger:       #f87171;
+
+  --text:         #e8f0fe;
+  --text-muted:   #6b82a8;
+  --text-dim:     #3d5275;
+
+  --glass:        rgba(13, 22, 40, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.07);
 }
 
 html, body, #root {
@@ -24,13 +39,12 @@ html, body, #root {
   color: var(--text);
   font-family: 'Inter', system-ui, sans-serif;
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
 }
 
-button {
-  cursor: pointer;
-  font-family: inherit;
-}
+button { cursor: pointer; font-family: inherit; }
+input  { font-family: inherit; }
 
-input {
-  font-family: inherit;
-}
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
