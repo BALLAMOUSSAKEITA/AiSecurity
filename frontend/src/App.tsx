@@ -7,7 +7,9 @@ import './App.css'
 export default function App() {
   const [detections, setDetections] = useState<Detection[]>([])
   const [isRunning, setIsRunning] = useState(false)
-  const [backendUrl, setBackendUrl] = useState('http://localhost:8000')
+  const [backendUrl, setBackendUrl] = useState(
+    import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000'
+  )
   const [backendOk, setBackendOk] = useState<boolean | null>(null)
   const [tesseractReady, setTesseractReady] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)

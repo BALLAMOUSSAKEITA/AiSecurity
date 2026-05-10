@@ -14,7 +14,10 @@ build/
 
 # Environnement
 .env
+.env.local
+.env.production
 !.env.example
+!frontend/.env.example
 *.local
 
 # Logs
