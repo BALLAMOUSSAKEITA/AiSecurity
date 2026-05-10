@@ -1,7 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
 import * as cocoSsd from '@tensorflow-models/coco-ssd'
 import '@tensorflow/tfjs'
-import { createWorker } from 'tesseract.js'
+import { createWorker, PSM } from 'tesseract.js'
 
 export interface BoundingBox {
   x: number
@@ -104,7 +104,7 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
       const worker = await createWorker('eng', 1)
       await worker.setParameters({
         tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',
-        tessedit_pageseg_mode: '8', // SINGLE_WORD
+        tessedit_pageseg_mode: PSM.SINGLE_WORD,
       })
       tesseractRef.current = worker
       setTesseractReady(true)
@@ -289,7 +289,7 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
   )
 
   const estimateSpeed = useCallback(
-    (track: TrackedVehicle, cx: number, cy: number, videoWidth: number, now: number): number | undefined => {
+    (track: TrackedVehicle, cx: number, cy: number, now: number): number | undefined => {
       const dt = (now - track.ts) / 1000
       if (dt < 0.05 || dt > 3) return undefined
       const dpx = Math.hypot(cx - track.cx, cy - track.cy)
@@ -343,7 +343,7 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
             const cy = by + bh / 2
 
             const track = matchOrCreateTrack(bbox, cx, cy, now)
-            const speed = estimateSpeed(track, cx, cy, video.videoWidth, now)
+            const speed = estimateSpeed(track, cx, cy, now)
 
             // Met à jour la piste avec la vitesse
             track.cx = cx
