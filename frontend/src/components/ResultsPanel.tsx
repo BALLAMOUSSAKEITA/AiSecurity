@@ -7,11 +7,11 @@ interface ResultsPanelProps {
 }
 
 const CLASS_LABELS: Record<string, string> = {
-  car:        '🚗 Voiture',
-  truck:      '🚛 Camion',
-  bus:        '🚌 Bus',
-  motorbike:  '🏍 Moto',
-  bicycle:    '🚲 Vélo',
+  car:       '🚗 Voiture',
+  truck:     '🚛 Camion',
+  bus:       '🚌 Bus',
+  motorbike: '🏍 Moto',
+  bicycle:   '🚲 Vélo',
 }
 
 export default function ResultsPanel({ detections, tesseractReady }: ResultsPanelProps) {
@@ -48,21 +48,32 @@ export default function ResultsPanel({ detections, tesseractReady }: ResultsPane
                 </div>
               )}
 
-              <div className="result-plate">
-                <span className="plate-label">Plaque</span>
-                {d.plate ? (
-                  <>
-                    <span className="plate-value">{d.plate}</span>
-                    {d.plateConfidence && (
-                      <span className="plate-conf">{Math.round(d.plateConfidence * 100)}%</span>
-                    )}
-                  </>
-                ) : (
+              {/* Plaque validée */}
+              {d.plate ? (
+                <div className="result-plate">
+                  <span className="plate-label">Plaque</span>
+                  <span className="plate-value">{d.plate}</span>
+                  {d.plateConfidence !== undefined && (
+                    <span className="plate-conf">{Math.round(d.plateConfidence * 100)}%</span>
+                  )}
+                  {d.ocrEngine && <span className="ocr-engine">{d.ocrEngine}</span>}
+                </div>
+              ) : (
+                <div className="result-plate result-plate--pending">
+                  <span className="plate-label">Plaque</span>
                   <span className="plate-pending">
                     {tesseractReady ? 'Lecture en cours…' : 'OCR en chargement…'}
                   </span>
-                )}
-              </div>
+                </div>
+              )}
+
+              {/* Debug : texte brut OCR */}
+              {d.ocrRaw && !d.plate && (
+                <div className="ocr-debug">
+                  <span className="ocr-debug-label">{d.ocrEngine ?? 'OCR'} lit :</span>
+                  <span className="ocr-debug-raw">"{d.ocrRaw.slice(0, 30)}"</span>
+                </div>
+              )}
 
             </li>
           ))}

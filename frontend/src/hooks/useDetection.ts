@@ -17,6 +17,8 @@ export interface Detection {
   score: number
   plate?: string
   plateConfidence?: number
+  ocrRaw?: string       // texte brut retourné par l'OCR (debug)
+  ocrEngine?: string    // moteur utilisé
   speedKmh?: number
   timestamp: number
 }
@@ -25,6 +27,8 @@ interface PlateCache {
   plate: string
   confidence: number
   ts: number
+  raw?: string
+  engine?: string
 }
 
 interface TrackedVehicle {
@@ -68,12 +72,14 @@ function iou(a: BoundingBox, b: BoundingBox): number {
   return union <= 0 ? 0 : inter / union
 }
 
-/** Garde uniquement les caractères de plaque valides. */
+/** Nettoie + valide un texte OCR comme plaque. Retourne le texte nettoyé ou '' si invalide. */
 function cleanPlate(text: string): string {
+  // Garde lettres et chiffres seulement
   const cleaned = text.toUpperCase().replace(/[^A-Z0-9]/g, '')
-  // Filtre basique : longueur entre 4 et 9 car, au moins 1 chiffre et 1 lettre
-  if (cleaned.length < 4 || cleaned.length > 9) return ''
-  if (!/[A-Z]/.test(cleaned) || !/[0-9]/.test(cleaned)) return ''
+  // Longueur réaliste pour une plaque (3–10 caractères)
+  if (cleaned.length < 3 || cleaned.length > 10) return ''
+  // Au moins 2 caractères alphanumériques consécutifs (évite le bruit)
+  if (!/[A-Z0-9]{2}/.test(cleaned)) return ''
   return cleaned
 }
 
@@ -214,16 +220,23 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
       const det = textDetRef.current
       if (!det) return null
       try {
-        // TextDetector fonctionne mieux sur l'image couleur naturelle
         const results = await det.detect(rawCanvas)
-        // Trier par longueur décroissante du texte détecté
         const sorted  = [...results].sort((a, b) => b.rawValue.length - a.rawValue.length)
+        // Essaye chaque résultat, garde le premier valide
         for (const r of sorted) {
-          const plate = cleanPlate(r.rawValue)
-          if (plate) return { plate, confidence: 0.85, ts: Date.now() }
+          const raw   = r.rawValue.trim()
+          const plate = cleanPlate(raw)
+          console.debug('[TextDetector] raw:', raw, '→ plate:', plate || '(rejeté)')
+          if (plate) return { plate, confidence: 0.85, ts: Date.now(), raw, engine: 'TextDetector' }
         }
+        // Retourne le texte brut quand même pour le debug (même si invalide)
+        const rawAll = sorted.map(r => r.rawValue).join(' | ')
+        if (rawAll) return { plate: '', confidence: 0, ts: Date.now(), raw: rawAll, engine: 'TextDetector' }
         return null
-      } catch { return null }
+      } catch (e) {
+        console.warn('[TextDetector] error:', e)
+        return null
+      }
     },
     [],
   )
@@ -234,10 +247,14 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
       if (!w) return null
       try {
         const { data } = await w.recognize(canvas)
-        const plate    = cleanPlate(data.text)
-        if (!plate) return null
-        return { plate, confidence: data.confidence / 100, ts: Date.now() }
-      } catch { return null }
+        const raw   = data.text.trim()
+        const plate = cleanPlate(raw)
+        console.debug('[Tesseract] raw:', raw, '→ plate:', plate || '(rejeté)', 'conf:', data.confidence)
+        return { plate, confidence: data.confidence / 100, ts: Date.now(), raw, engine: 'Tesseract' }
+      } catch (e) {
+        console.warn('[Tesseract] error:', e)
+        return null
+      }
     },
     [],
   )
@@ -245,7 +262,7 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
   const readPlateBackend = useCallback(
     async (video: HTMLVideoElement, bbox: BoundingBox): Promise<PlateCache | null> => {
       try {
-        const canvas = buildPlateCanvas(video, bbox)
+        const canvas = buildPlateCanvasRaw(video, bbox)
         const blob   = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92))
         if (!blob) return null
         const form   = new FormData()
@@ -253,9 +270,9 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
         const res    = await fetch(`${backendUrl}/api/plate`, { method: 'POST', body: form, signal: AbortSignal.timeout(4000) })
         if (!res.ok) return null
         const json   = await res.json() as { plate?: string; confidence?: number }
-        const plate  = cleanPlate(json.plate ?? '')
-        if (!plate) return null
-        return { plate, confidence: json.confidence ?? 0.6, ts: Date.now() }
+        const raw    = json.plate ?? ''
+        const plate  = cleanPlate(raw)
+        return { plate, confidence: json.confidence ?? 0.6, ts: Date.now(), raw, engine: 'Backend' }
       } catch { return null }
     },
     [backendUrl],
@@ -263,16 +280,18 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
 
   const readPlate = useCallback(
     async (video: HTMLVideoElement, bbox: BoundingBox): Promise<PlateCache | null> => {
-      // Priorité : backend → TextDetector (couleur) → Tesseract (binarisé)
       if (backendOkRef.current) {
         const r = await readPlateBackend(video, bbox)
-        if (r) return r
+        if (r?.plate) return r
       }
-      const rawCanvas  = buildPlateCanvasRaw(video, bbox)
+      const rawCanvas = buildPlateCanvasRaw(video, bbox)
       const r1 = await readPlateTextDetector(rawCanvas)
-      if (r1) return r1
-      const binCanvas  = buildPlateCanvas(video, bbox)
-      return readPlateTesseract(binCanvas)
+      if (r1?.plate) return r1
+      // Tesseract en dernier (plus lent)
+      const binCanvas = buildPlateCanvas(video, bbox)
+      const r2 = await readPlateTesseract(binCanvas)
+      // Retourne même un résultat vide pour montrer le texte brut dans le debug
+      return r2 ?? r1
     },
     [readPlateBackend, readPlateTextDetector, readPlateTesseract],
   )
@@ -395,9 +414,15 @@ export function useDetection({ backendUrl, onDetection, onBackendStatus, onTesse
               ctx.fillText(sl, bx + bw - sw2 + 5, by - 5)
             }
 
-            return { id: track.id, bbox, class: pred.class, score: pred.score,
-              plate: cache?.plate, plateConfidence: cache?.confidence,
-              speedKmh: speed, timestamp: Date.now() }
+            return {
+              id: track.id, bbox, class: pred.class, score: pred.score,
+              plate: cache?.plate || undefined,
+              plateConfidence: cache?.confidence,
+              ocrRaw: cache?.raw,
+              ocrEngine: cache?.engine,
+              speedKmh: speed,
+              timestamp: Date.now(),
+            }
           }),
         )
 

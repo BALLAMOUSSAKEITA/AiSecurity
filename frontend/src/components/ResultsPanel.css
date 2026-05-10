@@ -178,6 +178,44 @@
   font-style: italic;
 }
 
+.ocr-engine {
+  font-size: 0.6rem;
+  color: var(--text-dim);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+  font-weight: 600;
+}
+
+.ocr-debug {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  padding: 0.3rem 0.4rem;
+  background: rgba(251,191,36,0.06);
+  border: 1px solid rgba(251,191,36,0.15);
+  border-radius: 5px;
+}
+
+.ocr-debug-label {
+  font-size: 0.6rem;
+  color: var(--warning);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+}
+
+.ocr-debug-raw {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  color: var(--warning);
+  word-break: break-all;
+  opacity: 0.9;
+}
+
 /* ─── Mobile ──────────────────────────────────────────────── */
 @media (max-width: 640px) {
   .results-list {
