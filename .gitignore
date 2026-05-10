@@ -1,0 +1,33 @@
+# Dépendances
+node_modules/
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Environnement
+.env
+!.env.example
+*.local
+
+# Logs
+npm-install.log
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# TF / ML cache
+.tfjs_cache/

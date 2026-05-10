@@ -1,0 +1,145 @@
+.results-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.results-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.count {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.results-none {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.results-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.results-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.result-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  transition: border-color 0.2s;
+}
+
+.result-card:hover {
+  border-color: var(--accent);
+}
+
+.result-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.result-class {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.result-score {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: var(--surface);
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+}
+
+.result-speed {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  border-radius: 5px;
+  padding: 0.25rem 0.5rem;
+}
+
+.speed-ok { background: rgba(34,197,94,0.15); color: #22c55e; }
+.speed-mid { background: rgba(245,158,11,0.15); color: #f59e0b; }
+.speed-high { background: rgba(239,68,68,0.15); color: #ef4444; }
+
+.speed-icon { font-size: 0.75rem; }
+.speed-value { letter-spacing: 0.02em; }
+
+.result-plate {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.plate-label {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.plate-value {
+  font-family: 'Courier New', monospace;
+  font-size: 0.9rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  background: var(--surface);
+  border: 1px solid var(--success);
+  color: var(--success);
+  padding: 0.1rem 0.5rem;
+  border-radius: 4px;
+}
+
+.plate-conf {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.plate-pending {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* Mobile cards inline */
+@media (max-width: 640px) {
+  .results-list {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .result-card {
+    flex: 1;
+    min-width: 140px;
+  }
+}
